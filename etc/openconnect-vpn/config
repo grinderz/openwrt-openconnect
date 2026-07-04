@@ -1,0 +1,55 @@
+# /etc/openconnect-vpn/config
+# OpenConnect VPN settings.
+# Authentication happens off-router (vpn-auth.sh); the server
+# address comes from the pushed session file (HOST=), so it is not set here.
+
+# Protocol: anyconnect | gp | nc | pulse | f5 | fortinet
+VPN_PROTOCOL="anyconnect"
+
+# User-Agent for the tunnel connection. MUST match the one used during
+# authentication (EXTRA_OPTS in vpn-auth.conf), otherwise the ASA may
+# reject the cookie with 401. Empty = openconnect default.
+VPN_USERAGENT="AnyConnect"
+
+# 1 = IPv4 only (vpnc-script handles only INTERNAL_IP4_*),
+# 0 = let the server push IPv6 too
+DISABLE_IPV6=1
+
+# tun interface name (must match option device in /etc/config/network)
+VPN_IFACE="vpntun"
+
+# Where the session (cookie) is saved after authentication.
+# Kept in /tmp (tmpfs): the cookie is a secret and short-lived, no point
+# writing it to flash. Gone after reboot -- push a fresh one.
+SESSION_FILE="/tmp/oc-vpn.session"
+
+# ---- Routing (used by vpnc-script) ----
+
+# Additional networks to route through the VPN, space-separated CIDR.
+# Applied on top of whatever the server pushes.
+# Example: VPN_ROUTES="10.0.0.0/8 192.168.100.0/24"
+VPN_ROUTES=""
+
+# 1 = ignore split routes pushed by the server
+# (route only VPN_ROUTES, or everything if USE_DEFAULT_ROUTE=1)
+IGNORE_SERVER_ROUTES=0
+
+# 1 = route all traffic through the VPN if no split routes apply
+# 0 = only server-pushed routes and VPN_ROUTES
+USE_DEFAULT_ROUTE=0
+
+# ---- DNS ----
+
+# 1 = add DNS servers from the VPN to dnsmasq (via /tmp/dnsmasq.d)
+USE_VPN_DNS=0
+
+# If set, VPN DNS is used only for these domains (split DNS),
+# otherwise for all queries.
+# Example: VPN_DNS_DOMAINS="corp.example.com internal.local"
+VPN_DNS_DOMAINS=""
+
+# ---- Debug ----
+
+# 1 = on connect, log the server-pushed DNS servers and split routes
+# to syslog (view with logread or /etc/init.d/oc-vpn diag)
+LOG_SERVER_CONFIG=0

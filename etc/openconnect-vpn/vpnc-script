@@ -1,0 +1,133 @@
+#!/bin/sh
+# /etc/openconnect-vpn/vpnc-script
+# Minimal vpnc-compatible script for running openconnect standalone
+# on OpenWrt (the stock /lib/netifd/vpnc-script only works under netifd).
+#
+# openconnect invokes it with environment variables:
+#   reason               connect | disconnect | pre-init | (attempt-)reconnect
+#   TUNDEV               tun interface name
+#   VPNGATEWAY           VPN server IP
+#   INTERNAL_IP4_ADDRESS address assigned by the server
+#   INTERNAL_IP4_MTU     MTU
+#   INTERNAL_IP4_DNS     DNS servers (space-separated)
+#   CISCO_SPLIT_INC      number of split routes (+ *_ADDR / *_MASKLEN)
+
+CONF="/etc/openconnect-vpn/config"
+[ -f "$CONF" ] && . "$CONF"
+
+DNSMASQ_FILE="/tmp/dnsmasq.d/oc-vpn.conf"
+
+setup_routes() {
+    # Custom networks from the config, always applied
+    for net in $VPN_ROUTES; do
+        ip route replace "$net" dev "$TUNDEV"
+    done
+
+    if [ "$IGNORE_SERVER_ROUTES" != "1" ] && \
+       [ -n "$CISCO_SPLIT_INC" ] && [ "$CISCO_SPLIT_INC" -gt 0 ]; then
+        # Server sent split routes -- add them
+        i=0
+        while [ "$i" -lt "$CISCO_SPLIT_INC" ]; do
+            eval addr="\$CISCO_SPLIT_INC_${i}_ADDR"
+            eval mlen="\$CISCO_SPLIT_INC_${i}_MASKLEN"
+            [ -n "$addr" ] && ip route replace "$addr/$mlen" dev "$TUNDEV"
+            i=$((i + 1))
+        done
+    elif [ "$USE_DEFAULT_ROUTE" = "1" ]; then
+        # All traffic through the VPN. First pin the route to the VPN
+        # server itself via the current gateway, otherwise the tunnel loops.
+        defroute="$(ip route show default | head -n1)"
+        gw="$(echo "$defroute" | sed -n 's/.* via \([0-9.]*\).*/\1/p')"
+        dev="$(echo "$defroute" | sed -n 's/.* dev \([^ ]*\).*/\1/p')"
+        if [ -n "$gw" ] && [ -n "$dev" ]; then
+            ip route replace "$VPNGATEWAY/32" via "$gw" dev "$dev"
+        fi
+        # Two /1 routes override default without touching it
+        ip route replace 0.0.0.0/1   dev "$TUNDEV"
+        ip route replace 128.0.0.0/1 dev "$TUNDEV"
+    fi
+}
+
+setup_dns() {
+    [ "$USE_VPN_DNS" = "1" ] || return 0
+    [ -n "$INTERNAL_IP4_DNS" ] || return 0
+    mkdir -p /tmp/dnsmasq.d
+    new="$(mktemp /tmp/oc-vpn-dns.XXXXXX)" || return 0
+    for dns in $INTERNAL_IP4_DNS; do
+        if [ -n "$VPN_DNS_DOMAINS" ]; then
+            # split DNS: corporate domains go through the VPN DNS
+            for dom in $VPN_DNS_DOMAINS; do
+                echo "server=/$dom/$dns" >> "$new"
+            done
+        else
+            echo "server=$dns" >> "$new"
+        fi
+    done
+    # Restart dnsmasq only if the config actually changed (a restart
+    # drops the DNS cache for the whole network)
+    if ! cmp -s "$new" "$DNSMASQ_FILE" 2>/dev/null; then
+        mv "$new" "$DNSMASQ_FILE"
+        /etc/init.d/dnsmasq restart
+    else
+        rm -f "$new"
+    fi
+}
+
+log_server_config() {
+    [ "$LOG_SERVER_CONFIG" = "1" ] || return 0
+    logger -t oc-vpn "server DNS: ${INTERNAL_IP4_DNS:-none}"
+    if [ -n "$CISCO_SPLIT_INC" ] && [ "$CISCO_SPLIT_INC" -gt 0 ]; then
+        # Log in chunks of 10 routes so lines stay within syslog limits
+        i=0 n=0 routes=""
+        while [ "$i" -lt "$CISCO_SPLIT_INC" ]; do
+            eval addr="\$CISCO_SPLIT_INC_${i}_ADDR"
+            eval mlen="\$CISCO_SPLIT_INC_${i}_MASKLEN"
+            routes="$routes $addr/$mlen"
+            n=$((n + 1))
+            if [ "$n" -ge 10 ]; then
+                logger -t oc-vpn "server routes:$routes"
+                n=0 routes=""
+            fi
+            i=$((i + 1))
+        done
+        [ -n "$routes" ] && logger -t oc-vpn "server routes:$routes"
+        logger -t oc-vpn "server routes total: $CISCO_SPLIT_INC"
+    else
+        logger -t oc-vpn "server routes: none (full tunnel)"
+    fi
+}
+
+teardown_dns() {
+    if [ -f "$DNSMASQ_FILE" ]; then
+        rm -f "$DNSMASQ_FILE"
+        /etc/init.d/dnsmasq restart
+    fi
+}
+
+case "$reason" in
+    pre-init)
+        # tun module is usually loaded already (kmod-tun is an openconnect dependency)
+        [ -e /dev/net/tun ] || {
+            mkdir -p /dev/net
+            mknod /dev/net/tun c 10 200 2>/dev/null
+        }
+        ;;
+    connect)
+        ip link set dev "$TUNDEV" up mtu "${INTERNAL_IP4_MTU:-1406}"
+        ip addr replace "$INTERNAL_IP4_ADDRESS/32" dev "$TUNDEV"
+        setup_routes
+        setup_dns
+        log_server_config
+        logger -t oc-vpn "tunnel $TUNDEV is up, address $INTERNAL_IP4_ADDRESS"
+        ;;
+    disconnect)
+        teardown_dns
+        [ "$USE_DEFAULT_ROUTE" = "1" ] && \
+            ip route del "$VPNGATEWAY/32" 2>/dev/null
+        logger -t oc-vpn "tunnel $TUNDEV is down"
+        ;;
+    reconnect|attempt-reconnect)
+        ;;
+esac
+
+exit 0

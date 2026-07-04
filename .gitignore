@@ -1,0 +1,8 @@
+# Local session cookie (secret)
+session
+
+# Local settings with real credentials/hosts
+vpn-auth.conf
+
+.claude/
+.idea/

@@ -1,0 +1,100 @@
+#!/bin/sh /etc/rc.common
+# /etc/init.d/oc-vpn
+# OpenConnect service: connects using the session cookie pushed by
+# vpn-auth.sh (run on a desktop machine).
+
+START=95
+STOP=10
+USE_PROCD=1
+
+CONF="/etc/openconnect-vpn/config"
+RUNCFG="/tmp/oc-vpn.runtime.conf"
+
+extra_command "diag" "Show tunnel state and recent openconnect log"
+
+diag() {
+    [ -f "$CONF" ] && . "$CONF"
+    echo "--- interface ${VPN_IFACE:-vpntun} ---"
+    ip -brief addr show "${VPN_IFACE:-vpntun}" 2>/dev/null || echo "(down)"
+    echo "--- routes via tunnel ---"
+    ip route show dev "${VPN_IFACE:-vpntun}" 2>/dev/null
+    echo "--- last log lines ---"
+    logread | grep -E 'openconnect|oc-vpn' | tail -n 20
+}
+
+start_service() {
+    [ -f "$CONF" ] || { logger -t oc-vpn "missing $CONF"; return 1; }
+    . "$CONF"
+
+    if [ ! -s "$SESSION_FILE" ]; then
+        logger -t oc-vpn "no saved session: push one with vpn-auth.sh -p"
+        return 1
+    fi
+    . "$SESSION_FILE"
+
+    if [ -z "$COOKIE" ] || [ -z "$HOST" ]; then
+        logger -t oc-vpn "session file is corrupted: push a fresh one with vpn-auth.sh -p"
+        return 1
+    fi
+
+    # Pass the cookie via a config file so it does not show up in `ps`
+    umask 077
+    cat > "$RUNCFG" <<EOF
+protocol=$VPN_PROTOCOL
+cookie=$COOKIE
+interface=$VPN_IFACE
+script=/etc/openconnect-vpn/vpnc-script
+non-inter
+reconnect-timeout=86400
+EOF
+    # Pin the server certificate if it was captured during authentication
+    [ -n "$FINGERPRINT" ] && echo "servercert=$FINGERPRINT" >> "$RUNCFG"
+    [ "$DISABLE_IPV6" = "1" ] && echo "disable-ipv6" >> "$RUNCFG"
+    [ -n "$VPN_USERAGENT" ] && echo "useragent=$VPN_USERAGENT" >> "$RUNCFG"
+
+    procd_open_instance
+    procd_set_param command /usr/sbin/openconnect --config "$RUNCFG" "$HOST"
+    # Respawn forever (retry=0), every 10 s: at boot WAN may come up later
+    # than this service, and giving up after a few quick failures would
+    # leave the VPN down until a manual start. An expired cookie needs
+    # manual intervention anyway (SMS), so retrying cheaply is fine.
+    procd_set_param respawn 3600 10 0
+    procd_set_param stderr 1
+    procd_set_param pidfile /var/run/oc-vpn.pid
+    procd_close_instance
+}
+
+stop_service() {
+    # procd stops the service with SIGTERM, but openconnect 9.x treats
+    # SIGTERM like SIGINT: it LOGS THE SESSION OFF, invalidating the
+    # cookie server-side (-> 401 on the next start, new SMS login needed).
+    # SIGHUP disconnects WITHOUT logging off, so send it first and wait
+    # for openconnect to exit; procd's TERM then hits a dead pid.
+    # SIGHUP also runs vpnc-script disconnect (routes/DNS cleanup).
+    # Must not return until openconnect is really gone: procd starts the
+    # new instance right after, and a lingering process still holds the
+    # tun device (TUNSETIFF: Resource busy).
+    local pid i
+    pid="$(pidof openconnect)"
+    if [ -n "$pid" ]; then
+        kill -HUP $pid 2>/dev/null
+        i=0
+        while [ "$i" -lt 10 ] && kill -0 $pid 2>/dev/null; do
+            sleep 1
+            i=$((i + 1))
+        done
+        # Still alive: SIGKILL. Unlike SIGTERM it cannot trigger a
+        # server-side logoff, so the cookie stays valid.
+        if kill -0 $pid 2>/dev/null; then
+            kill -9 $pid 2>/dev/null
+            sleep 1
+        fi
+    fi
+    rm -f "$RUNCFG"
+    # Fallback cleanup in case openconnect was killed before vpnc-script
+    # disconnect ran: stale VPN DNS must not keep serving the network.
+    if [ -f /tmp/dnsmasq.d/oc-vpn.conf ]; then
+        rm -f /tmp/dnsmasq.d/oc-vpn.conf
+        /etc/init.d/dnsmasq restart
+    fi
+}
