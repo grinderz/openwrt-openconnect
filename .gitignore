@@ -3,6 +3,7 @@ session
 
 # Local settings with real credentials/hosts
 vpn-auth.conf
+vpn-auth-sso.conf
 
 .claude/
 .idea/
