@@ -1,4 +1,8 @@
 #!/bin/sh
+# shellcheck disable=SC1090,SC2154
+# SC1090: the config path is dynamic by design.
+# SC2154: reason/TUNDEV/CISCO_* come from openconnect's environment,
+#         addr/mlen are assigned via eval.
 # /etc/openconnect-vpn/vpnc-script
 # Minimal vpnc-compatible script for running openconnect standalone
 # on OpenWrt (the stock /lib/netifd/vpnc-script only works under netifd).
@@ -112,7 +116,9 @@ case "$reason" in
             mknod /dev/net/tun c 10 200 2>/dev/null
         }
         ;;
-    connect)
+    connect|reconnect)
+        # reconnect: the server may hand out a fresh address after roaming;
+        # everything below is an idempotent "replace", so just re-run it.
         ip link set dev "$TUNDEV" up mtu "${INTERNAL_IP4_MTU:-1406}"
         ip addr replace "$INTERNAL_IP4_ADDRESS/32" dev "$TUNDEV"
         setup_routes
@@ -126,7 +132,7 @@ case "$reason" in
             ip route del "$VPNGATEWAY/32" 2>/dev/null
         logger -t oc-vpn "tunnel $TUNDEV is down"
         ;;
-    reconnect|attempt-reconnect)
+    attempt-reconnect)
         ;;
 esac
 

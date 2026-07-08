@@ -1,0 +1,42 @@
+# vpn.conf -- example. Copy to vpn.conf and edit, or pass an explicit
+# path: ./vpn-auth.sh -c /path/to/conf
+# Sourced as shell by vpn-auth.sh, vpn-auth-sso.sh and deploy.sh.
+# Any variable is optional; unset ones keep the script defaults.
+
+VPN_SERVER="vpn.example.com"       # VPN server address
+VPN_USER="user"                    # login (vpn-auth.sh only)
+
+# Tunnel-groups: one per authentication path.
+VPN_GROUP="MYGROUP"                # form auth: password + SMS (vpn-auth.sh)
+VPN_SSO_GROUP="MYGROUP-SSO"        # SAML/SSO (vpn-auth-sso.sh)
+
+# ---- vpn-auth.sh (password + SMS) ----
+
+VPN_PROTOCOL="anyconnect"          # anyconnect | gp | pulse | f5 | fortinet
+
+# Command that prints the password to stdout (first factor).
+PASSWORD_CMD="pass vpn/password"
+
+# Other openconnect options.
+EXTRA_OPTS="--disable-ipv6 --useragent=AnyConnect"
+
+# ---- vpn-auth-sso.sh (browser SAML/SSO) ----
+
+# AnyConnect version openconnect-sso impersonates; the cookie is bound to
+# the resulting User-Agent "AnyConnect Linux_64 <version>".
+#AC_VERSION="4.7.00136"
+
+# Extra openconnect-sso options.
+#SSO_OPTS="-l DEBUG"
+
+# ---- shared ----
+
+# csd-wrapper (hostscan). Empty = auto-detect / download.
+#CSD_WRAPPER=""
+
+# Where to save the cookie locally (default: session next to the script).
+#SESSION_FILE="$HOME/.openconnect/session"
+
+# Router (used by -p push and by deploy.sh).
+OC_HOST="root@192.168.1.1"
+#OC_HOST_SESSION="/tmp/oc-vpn.session"
