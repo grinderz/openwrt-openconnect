@@ -2,6 +2,12 @@
 # /etc/init.d/oc-vpn
 # OpenConnect service: connects using the session cookie pushed by
 # vpn-auth.sh (run on a desktop machine).
+#
+# shellcheck disable=SC1090,SC2034,SC2086,SC3043
+# SC2034: START/STOP/USE_PROCD are read by rc.common.
+# SC1090: config/session paths are dynamic by design.
+# SC2086: $pid may hold several pids (pidof); word splitting intentional.
+# SC3043: busybox ash supports `local`.
 
 START=95
 STOP=10
@@ -52,12 +58,18 @@ EOF
     [ "$DISABLE_IPV6" = "1" ] && echo "disable-ipv6" >> "$RUNCFG"
     [ -n "$VPN_USERAGENT" ] && echo "useragent=$VPN_USERAGENT" >> "$RUNCFG"
 
+    # Fresh start = fresh cookie: reset the rejection counter (see run.sh)
+    rm -f /tmp/oc-vpn.cookie-rejected
+
     procd_open_instance
-    procd_set_param command /usr/sbin/openconnect --config "$RUNCFG" "$HOST"
+    # run.sh wraps openconnect: it stops the service after 3 consecutive
+    # "Cookie was rejected" exits (code 2), so an expired cookie does not
+    # hammer the server with 401s until someone notices.
+    procd_set_param command /etc/openconnect-vpn/run.sh "$HOST"
     # Respawn forever (retry=0), every 10 s: at boot WAN may come up later
     # than this service, and giving up after a few quick failures would
-    # leave the VPN down until a manual start. An expired cookie needs
-    # manual intervention anyway (SMS), so retrying cheaply is fine.
+    # leave the VPN down until a manual start. Cookie expiry is handled
+    # separately by run.sh.
     procd_set_param respawn 3600 10 0
     procd_set_param stderr 1
     procd_set_param pidfile /var/run/oc-vpn.pid
@@ -90,7 +102,7 @@ stop_service() {
             sleep 1
         fi
     fi
-    rm -f "$RUNCFG"
+    rm -f "$RUNCFG" /tmp/oc-vpn.cookie-rejected
     # Fallback cleanup in case openconnect was killed before vpnc-script
     # disconnect ran: stale VPN DNS must not keep serving the network.
     if [ -f /tmp/dnsmasq.d/oc-vpn.conf ]; then

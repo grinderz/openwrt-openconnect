@@ -27,9 +27,10 @@
 #   ./vpn-auth-sso.sh -c my.conf   # use an alternative config file
 #   ./vpn-auth-sso.sh -s vpn.host -g GROUP -p
 #
-# Settings live in vpn-auth-sso.conf next to this script (see
-# vpn-auth-sso.conf.example); -c FILE selects another config.
-# Command-line flags override config values.
+# Settings live in vpn.conf next to this script (shared with vpn-auth.sh
+# and deploy.sh, see vpn.conf.example); the SAML tunnel-group comes from
+# VPN_SSO_GROUP. -c FILE selects another config. Command-line flags
+# override config values.
 #
 # Requires: openconnect-sso (uv tool install --python 3.12 \
 #   --with "setuptools<81" openconnect-sso), ssh to the router.
@@ -38,10 +39,14 @@ set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Shared helpers: err/info, resolve_csd_wrapper, save_session,
+# show_saved_session, push_session, manual_push_hint.
+. "$SCRIPT_DIR/lib.sh"
+
 # ================= DEFAULTS (overridden by config and flags) =================
 
 VPN_SERVER="vpn.example.com"       # VPN server address
-VPN_GROUP=""                       # tunnel-group (SAML/SSO one)
+VPN_SSO_GROUP=""                   # tunnel-group (SAML/SSO one)
 
 # AnyConnect version openconnect-sso impersonates; determines the User-Agent
 # ("AnyConnect Linux_64 <version>") the cookie gets bound to.
@@ -60,21 +65,18 @@ CSD_URL="https://gitlab.com/openconnect/openconnect/-/raw/master/trojans/csd-pos
 
 SESSION_FILE="$SCRIPT_DIR/session"             # where to save the cookie locally
 
-ROUTER="root@192.168.1.1"                      # router ssh address
-ROUTER_SESSION="/tmp/oc-vpn.session"           # session file path on the router (tmpfs)
+OC_HOST="root@192.168.1.1"                   # router ssh address
+OC_HOST_SESSION="/tmp/oc-vpn.session"        # session file path on the router (tmpfs)
 PUSH=0                                         # 1 = push to the router right away (-p flag)
 
-CONFIG="$SCRIPT_DIR/vpn-auth-sso.conf"   # default config path
+CONFIG="$SCRIPT_DIR/vpn.conf"            # default config path
 
 # =============================================================================
 
 usage() {
-    sed -n '2,31p' "$0"
+    sed -n '2,35p' "$0"
     exit 0
 }
-
-err()  { printf '\033[31m%s\033[0m\n' "$*" >&2; }
-info() { printf '\033[32m%s\033[0m\n' "$*"; }
 
 OPTSTRING="c:s:g:o:ph"
 
@@ -97,7 +99,7 @@ OPTIND=1
 while getopts "$OPTSTRING" opt; do
     case "$opt" in
         s) VPN_SERVER="$OPTARG" ;;
-        g) VPN_GROUP="$OPTARG" ;;
+        g) VPN_SSO_GROUP="$OPTARG" ;;
         o) SSO_OPTS="$OPTARG" ;;
         p) PUSH=1 ;;
         *) ;;
@@ -114,38 +116,6 @@ command -v openconnect-sso >/dev/null || {
 PYBIN="$(sed -n '1s/^#! *//p' "$(command -v openconnect-sso)")"
 [ -x "$PYBIN" ] || { err "cannot resolve openconnect-sso's python: $PYBIN"; exit 1; }
 
-# Locate csd-post.sh: explicit CSD_WRAPPER -> common macOS/Linux paths -> download.
-resolve_csd_wrapper() {
-    [ -n "$CSD_WRAPPER" ] && { [ -x "$CSD_WRAPPER" ] && return 0; err "CSD_WRAPPER is set but not executable: $CSD_WRAPPER"; return 1; }
-
-    local c cands=()
-    command -v brew >/dev/null && cands+=("$(brew --prefix openconnect 2>/dev/null)/libexec/openconnect/csd-post.sh")
-    cands+=(
-        /opt/homebrew/opt/openconnect/libexec/openconnect/csd-post.sh  # macOS ARM brew
-        /usr/local/opt/openconnect/libexec/openconnect/csd-post.sh     # macOS Intel brew
-        /usr/lib/openconnect/csd-post.sh                               # Debian/Ubuntu
-        /usr/libexec/openconnect/csd-post.sh                           # Fedora/RHEL
-        /usr/share/openconnect/csd-post.sh
-        "$SCRIPT_DIR/csd-post.sh"                                      # downloaded earlier
-    )
-    for c in "${cands[@]}"; do
-        [ -f "$c" ] || continue
-        [ -x "$c" ] || chmod +x "$c" 2>/dev/null || true
-        CSD_WRAPPER="$c"; return 0
-    done
-
-    # Not found anywhere -- download next to this script.
-    CSD_WRAPPER="$SCRIPT_DIR/csd-post.sh"
-    info "csd-post.sh not found on the system, downloading -> $CSD_WRAPPER"
-    if command -v curl >/dev/null; then
-        curl -fsSL -o "$CSD_WRAPPER" "$CSD_URL" || return 1
-    elif command -v wget >/dev/null; then
-        wget -qO "$CSD_WRAPPER" "$CSD_URL" || return 1
-    else
-        err "No curl/wget available to download csd-post.sh."; return 1
-    fi
-    chmod +x "$CSD_WRAPPER"
-}
 resolve_csd_wrapper || { err "csd-wrapper unavailable. Install openconnect with trojans or set CSD_WRAPPER."; exit 1; }
 
 # pin-sha256 of the server public key for csd-post.sh certificate pinning
@@ -163,14 +133,14 @@ ARGS=(
     --authenticate shell
     --ac-version "$AC_VERSION"
 )
-[ -n "$VPN_GROUP" ] && ARGS+=(--authgroup "$VPN_GROUP")
+[ -n "$VPN_SSO_GROUP" ] && ARGS+=(--authgroup "$VPN_SSO_GROUP")
 # shellcheck disable=SC2206
 ARGS+=($SSO_OPTS)
 
 TMP="$(mktemp)" || exit 1
 trap 'rm -f "$TMP"' EXIT
 
-info "Authenticating to $VPN_SERVER (group $VPN_GROUP) via browser SSO..."
+info "Authenticating to $VPN_SERVER (group $VPN_SSO_GROUP) via browser SSO..."
 echo  "Command: openconnect-sso ${ARGS[*]}"
 echo
 info "A login window will open. Log in there by hand (no autofill; nothing"
@@ -196,54 +166,21 @@ if ! grep -q '^COOKIE=' "$TMP"; then
     exit 1
 fi
 
-mkdir -p "$(dirname "$SESSION_FILE")"
-umask 077
 # Keep only the session variables (drop any stray log lines) and record the
 # User-Agent the cookie is bound to; the router's init script sources this
 # file after its config, so VPN_USERAGENT here overrides the router default.
-grep -E '^(HOST|COOKIE|FINGERPRINT)=' "$TMP" > "$SESSION_FILE"
-printf "VPN_USERAGENT='AnyConnect Linux_64 %s'\n" "$AC_VERSION" >> "$SESSION_FILE"
-
-info "Cookie obtained and saved to $SESSION_FILE"
-echo "-----------------------------------------"
-grep -E '^(HOST|FINGERPRINT|VPN_USERAGENT)=' "$SESSION_FILE"
-echo "COOKIE=<hidden, $(grep '^COOKIE=' "$SESSION_FILE" | wc -c | tr -d ' ') bytes>"
-echo "-----------------------------------------"
+{
+    grep -E '^(HOST|COOKIE|FINGERPRINT)=' "$TMP"
+    printf "VPN_USERAGENT='AnyConnect Linux_64 %s'\n" "$AC_VERSION"
+} | save_session
+show_saved_session 'HOST|FINGERPRINT|VPN_USERAGENT'
 
 if [ "$PUSH" = 1 ]; then
-    info "Pushing the session to router $ROUTER..."
-    # Write via ssh with umask 077 so the file is 600 from the start
-    # (scp would briefly leave it world-readable in /tmp).
-    if ssh "$ROUTER" "umask 077; cat > $ROUTER_SESSION && /etc/init.d/oc-vpn restart" < "$SESSION_FILE"; then
-        info "Done: oc-vpn service on the router restarted."
-        info "Waiting for the tunnel to come up..."
-        # Poll for the tunnel address (tun state stays UNKNOWN, so grep
-        # for the assigned IP, not for UP)
-        ssh "$ROUTER" sh <<'REMOTE'
-. /etc/openconnect-vpn/config 2>/dev/null
-IFACE="${VPN_IFACE:-vpntun}"
-i=0
-while [ "$i" -lt 20 ]; do
-    ip -brief addr show "$IFACE" 2>/dev/null | grep -q / && break
-    sleep 1
-    i=$((i + 1))
-done
-if ip -brief addr show "$IFACE" 2>/dev/null | grep -q /; then
-    ip -brief addr show "$IFACE"
-else
-    echo "tunnel is not up after 20s; recent log:"
-    logread | grep -E 'openconnect|oc-vpn' | tail -n 10
-fi
-REMOTE
-    else
-        err "Failed to push to the router. Copy manually:"
-        echo "  ssh $ROUTER 'umask 077; cat > $ROUTER_SESSION && /etc/init.d/oc-vpn restart' < $SESSION_FILE"
-        exit 1
-    fi
+    push_session || exit 1
 else
     echo
     echo "To push to the router and restart the VPN:"
     echo "  $0 ... -p"
     echo "or manually:"
-    echo "  ssh $ROUTER 'umask 077; cat > $ROUTER_SESSION && /etc/init.d/oc-vpn restart' < $SESSION_FILE"
+    manual_push_hint
 fi
