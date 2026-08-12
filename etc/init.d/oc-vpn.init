@@ -56,6 +56,8 @@ EOF
     # Pin the server certificate if it was captured during authentication
     [ -n "$FINGERPRINT" ] && echo "servercert=$FINGERPRINT" >> "$RUNCFG"
     [ "$DISABLE_IPV6" = "1" ] && echo "disable-ipv6" >> "$RUNCFG"
+    # See DISABLE_DTLS in the config for why this is on by default
+    [ "${DISABLE_DTLS:-1}" = "1" ] && echo "no-dtls" >> "$RUNCFG"
     [ -n "$VPN_USERAGENT" ] && echo "useragent=$VPN_USERAGENT" >> "$RUNCFG"
 
     # Fresh start = fresh cookie: reset the rejection counter (see run.sh)

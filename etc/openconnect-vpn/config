@@ -15,6 +15,13 @@ VPN_USERAGENT="AnyConnect"
 # 0 = let the server push IPv6 too
 DISABLE_IPV6=1
 
+# 1 = TCP-only tunnel (no DTLS). openconnect <= 9.12 (and current
+# master) crashes in the epoll mainloop when the DTLS socket is torn
+# down and recreated on a lossy uplink (EPOLL_CTL_MOD: ENOENT ->
+# epoll_wait: EBADF -> exit), dropping the tunnel every time. Costs
+# some throughput. Set to 0 once the fix lands upstream.
+DISABLE_DTLS=1
+
 # tun interface name (must match option device in /etc/config/network)
 VPN_IFACE="vpntun"
 
