@@ -40,3 +40,14 @@ EXTRA_OPTS="--disable-ipv6 --useragent=AnyConnect"
 # Router (used by -p push and by deploy.sh).
 OC_HOST="root@192.168.1.1"
 #OC_HOST_SESSION="/tmp/oc-vpn.session"
+
+# ---- deploy.sh: /etc/openconnect-vpn/config ----
+
+# Values patched into etc/openconnect-vpn/config before upload, one RC_<KEY>
+# per key of that file. With at least one set the router's copy is replaced
+# on deploy (previous kept as config.bak); without any it is never
+# overwritten and the template goes up as config.new to merge by hand.
+#RC_VPN_IFACE="vpntun"
+#RC_VPN_ROUTES="10.0.0.0/8 192.168.100.0/24"
+#RC_IGNORE_SERVER_ROUTES=1
+#RC_VPN_DNS_DOMAINS="corp.example.com"

@@ -55,7 +55,8 @@ OC_HOST="root@192.168.1.1"                   # router ssh address
 OC_HOST_SESSION="/tmp/oc-vpn.session"        # session file path on the router (tmpfs)
 PUSH=0                                         # 1 = push to the router right away (-p flag)
 
-CONFIG="$SCRIPT_DIR/vpn.conf"            # default config path
+CONFIG="$SCRIPT_DIR/vpn.conf"            # default config path, else the dotfiles-rendered one
+[ -f "$CONFIG" ] || CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/openwrt-openconnect/vpn.conf"
 
 # =============================================================================
 

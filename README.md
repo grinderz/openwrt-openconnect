@@ -44,7 +44,9 @@ automatically.
 ## Configuration
 
 Settings (server, login, tunnel-groups, `PASSWORD_CMD`, router address) live
-in a single `vpn.conf` next to the scripts, shared by `vpn-auth.sh`,
+in a single `vpn.conf` next to the scripts (or, when that one is absent,
+`~/.config/openwrt-openconnect/vpn.conf`, which the dotfiles repo renders from
+its private toml), shared by `vpn-auth.sh`,
 `vpn-auth-sso.sh` and `deploy.sh` — copy `vpn.conf.example` and edit. The
 two authentication paths use separate tunnel-group variables: `VPN_GROUP`
 (form auth) and `VPN_SSO_GROUP` (SAML). An alternative file can be passed
@@ -70,9 +72,13 @@ changes with:
 ssh root@192.168.1.1 '/etc/init.d/oc-vpn restart'
 ```
 
-If `/etc/openconnect-vpn/config` already exists on the router, `deploy.sh`
-uploads the new version as `config.new` instead of overwriting — merge
-manual edits by hand.
+`etc/openconnect-vpn/config` is a template: `RC_<KEY>` values in `vpn.conf`
+(one per key of that file, e.g. `RC_VPN_IFACE`, `RC_VPN_ROUTES`; the dotfiles
+repo renders them from `[data.openwrt_openconnect.router_config]`) are patched
+in before upload. With at least one `RC_` set the config is managed from here
+and `deploy.sh` replaces the router's copy, keeping the previous one as
+`config.bak`. Without any, an existing config is never overwritten: the new
+version goes up as `config.new` to merge by hand.
 
 ## Router setup (OpenWrt)
 
